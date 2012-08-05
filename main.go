@@ -121,9 +121,7 @@ func (r *Runner) Ping(h *Host) error {
 
 func (r *Runner) OK(h *Host, duration time.Duration) error {
 	h.Lock()
-	log.Printf("OKwas %v", h.pos)
 	h.pos = (h.pos + 1) % 10
-	log.Printf("OKnow %v", h.pos)
 	h.Latency[h.pos] = duration
 	log.Printf("latency for %d %v", h.pos, duration)
 	h.Error[h.pos] = nil
@@ -133,9 +131,7 @@ func (r *Runner) OK(h *Host, duration time.Duration) error {
 
 func (r *Runner) Fail(h *Host, getErr error) error {
 	h.Lock()
-	log.Printf("FAILwas %v", h.pos)
 	h.pos = (h.pos + 1) % 10
-	log.Printf("FAILnow %v", h.pos)
 	h.Error[h.pos] = getErr
 	h.Unlock()
 	return nil
@@ -178,12 +174,10 @@ func StartRunner(file string, poll time.Duration) *Runner {
 	go func() {
 		for {
 			errc := make(chan error)
-			for name, _ := range r.Hosts {
-				go func() {
-					h := r.Hosts[name]
-					log.Println("pos", h.pos)
-					errc <- r.Ping(h)
-				}()
+			for _, h := range r.Hosts {
+				go func(host *Host) {
+					errc <- r.Ping(host)
+				}(h)
 			}
 			for _ = range r.Hosts {
 				if err := <-errc; err != nil {

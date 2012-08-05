@@ -54,7 +54,7 @@ Email: <input name="email" type="text"><br>
 <h2>No web sites being monitored.
 {{ end }}
 <h2>Notes</h2>
-<p>The latency reported includes the time doing a GET request on /, receiving the response and following any redirects (301, 302).</p>
+<p>The latency reported includes the time for doing a GET request on /, reading the response and following any redirects (301, 302).</p>
 </body>
 </html>
 `))

@@ -121,7 +121,7 @@ func (r *Runner) Ping(h *Host) error {
 
 func (r *Runner) OK(h *Host, duration time.Duration) error {
 	h.Lock()
-	h.pos = (h.pos + 1) % 10
+	h.pos = (h.pos + 1) % bufSize
 	h.Latency[h.pos] = duration
 	log.Printf("latency for %d %v", h.pos, duration)
 	h.Error[h.pos] = nil
@@ -131,7 +131,7 @@ func (r *Runner) OK(h *Host, duration time.Duration) error {
 
 func (r *Runner) Fail(h *Host, getErr error) error {
 	h.Lock()
-	h.pos = (h.pos + 1) % 10
+	h.pos = (h.pos + 1) % bufSize
 	h.Error[h.pos] = getErr
 	h.Unlock()
 	return nil

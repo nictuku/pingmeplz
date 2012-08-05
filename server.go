@@ -47,9 +47,11 @@ Email: <input name="email" type="text"><br>
 <h2>Web sites currently being monitored</h2>
 <ul>
   {{range .Hosts }}	
-    <li>{{ .Host }}</li>
+    <li>{{ .Host }}, {{ .Status }} </li>
   {{end }}
 </ul>
+{{ else }}
+<h2>No web sites being monitored.
 {{ end }}
 </body>
 </html>
@@ -64,11 +66,24 @@ func newhost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	host := &Host{Host: r.FormValue("host"), Email: r.FormValue("email")}
-	if err := runner.NewHost(host); err != nil {
-		log.Printf("newhost error: %v", err)
-		http.Error(w, "Could not include new host in the runner.", http.StatusInternalServerError)
+
+	u := fmt.Sprintf("http://%s/", host.Host)
+	resp, err := getWithTimeout(u, *readTimeout)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if err != nil || resp == nil || resp.StatusCode != 200 {
+		s := fmt.Sprintf("newhost GET error: %v", err)
+		log.Println(s)
+		http.Error(w, s, http.StatusInternalServerError)
 		return
 	}
+	if err := runner.NewHost(host); err != nil {
+		log.Printf("newhost error: %v", err)
+		http.Error(w, "Could not include new host: "+host.Host, http.StatusInternalServerError)
+		return
+	}
+
 	s := fmt.Sprintf("Added host: %v", host)
 	log.Println(s)
 	fmt.Fprint(w, s)

@@ -1,4 +1,7 @@
 /*
+
+Based on webmon by Andrew Gerrand <adg@golang.org>.
+
 Copyright 2011 Google Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,34 +17,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-/*
-webmon is a simple website monitoring program.
-
-It reads a JSON-formatted rule file like this:
-
-[
-	{"Host": "example.com", "Email": "admin@example.net"}
-]
-
-It periodically makes a GET request to http://example.com/.
-If the request returns anything other than a 200 OK response, it sends an email
-to admin@example.net. When the request starts returning 200 OK again, it sends
-another email.
-
-Usage of webmon:
-  -errors=3: number of errors before notifying
-  -from="webmon@localhost": notification from address
-  -Hosts="": host definition file
-  -poll=10s: file poll interval
-  -smtp="localhost:25": SMTP server
-  -timeout=10s: response read timeout
-
-webmon was written by Andrew Gerrand <adg@golang.org>
-*/
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -49,21 +27,20 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/smtp"
 	"os"
-	"strings"
 	"sync"
-	"text/template"
 	"time"
 )
 
 var (
 	hostFile     = flag.String("hosts", "", "host definition file")
 	pollInterval = flag.Duration("poll", time.Second*10, "file poll interval")
-	fromEmail    = flag.String("from", "webmon@localhost", "notification from address")
-	mailServer   = flag.String("smtp", "localhost:25", "SMTP server")
-	numErrors    = flag.Int("errors", 3, "number of errors before notifying")
 	readTimeout  = flag.Duration("timeout", time.Second*10, "response read timeout")
+)
+
+const (
+	// How many errors and latency stats to keep for each host.
+	bufSize = 30
 )
 
 var runner *Runner
@@ -81,20 +58,30 @@ func main() {
 type Runner struct {
 	sync.Mutex // Protects errors during concurrent Ping
 	last       time.Time
-	Hosts      []*Host
-	errors     map[string]*State
+	Hosts      map[string]*Host
 }
 
 type Host struct {
 	Host  string
 	Email string
 
-	Error []error
+	// Protects pos, Latency and Error
+	sync.Mutex `json:"-"`
+	pos        int                    `json:"-"` // 0..9 
+	Latency    [bufSize]time.Duration `json:"-"`
+	Error      [bufSize]error         `json:"-"`
 }
 
-type State struct {
-	err  []error
-	sent bool
+func (h *Host) Status() string {
+	h.Lock()
+	defer h.Unlock()
+	e := h.Error[h.pos]
+	if e != nil {
+		return "Error: " + e.Error()
+	}
+	fmt.Printf("%v %v\n", h.Host, h.Latency)
+	return fmt.Sprintf("%dms", h.Latency[h.pos]/time.Millisecond)
+
 }
 
 func getWithTimeout(u string, timeout time.Duration) (*http.Response, error) {
@@ -116,114 +103,94 @@ func getWithTimeout(u string, timeout time.Duration) (*http.Response, error) {
 
 func (r *Runner) Ping(h *Host) error {
 	u := fmt.Sprintf("http://%s/", h.Host)
+	start := time.Now()
 	resp, err := getWithTimeout(u, *readTimeout)
+	duration := time.Since(start)
 	if err != nil {
+		log.Printf("%v FAIL after %v", h.Host, duration)
 		return r.Fail(h, err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
+		log.Printf("%v ERROR after %v", h.Host, duration)
 		return r.Fail(h, errors.New(resp.Status))
 	}
-	return r.OK(h)
+	log.Printf("%v OK after %v", h.Host, duration)
+	return r.OK(h, duration)
 }
 
-func (r *Runner) OK(h *Host) error {
-	r.Lock()
-	s := r.errors[h.Host]
-	if s == nil {
-		r.Unlock()
-		return nil
-	}
-	r.errors[h.Host] = nil
-	r.Unlock()
-	if !s.sent {
-		return nil
-	}
-	h.Error = nil
-	return h.Notify()
+func (r *Runner) OK(h *Host, duration time.Duration) error {
+	h.Lock()
+	log.Printf("OKwas %v", h.pos)
+	h.pos = (h.pos + 1) % 10
+	log.Printf("OKnow %v", h.pos)
+	h.Latency[h.pos] = duration
+	log.Printf("latency for %d %v", h.pos, duration)
+	h.Error[h.pos] = nil
+	h.Unlock()
+	return nil
 }
 
 func (r *Runner) Fail(h *Host, getErr error) error {
-	r.Lock()
-	s := r.errors[h.Host]
-	if s == nil {
-		s = new(State)
-		r.errors[h.Host] = s
-	}
-	r.Unlock()
-	s.err = append(s.err, getErr)
-	if s.sent || len(s.err) < *numErrors {
-		return nil
-	}
-	s.sent = true
-	h.Error = s.err
-	return h.Notify()
+	h.Lock()
+	log.Printf("FAILwas %v", h.pos)
+	h.pos = (h.pos + 1) % 10
+	log.Printf("FAILnow %v", h.pos)
+	h.Error[h.pos] = getErr
+	h.Unlock()
+	return nil
 }
 
-func (r *Runner) NewHost(h *Host) error {
-	r.Lock()
-	defer r.Unlock()
-	r.Hosts = append(r.Hosts, h)
-
-	//func OpenFile(name string, flag int, perm FileMode) (file *File, err error)
+func (r *Runner) save() error {
+	// TODO: do a file switch only after the write is done.
 
 	f, err := os.OpenFile(*hostFile, os.O_WRONLY, 0)
 	if err != nil {
 		return fmt.Errorf("NewHost Open: %v", err)
 	}
 	defer f.Close()
-
+	r.Lock()
 	err = json.NewEncoder(f).Encode(r.Hosts)
+	r.Unlock()
 	if err != nil {
 		return fmt.Errorf("loadRules json Encode: %v", err)
 	}
 	return nil
 }
-
-var notifyTemplate = template.Must(template.New("").Funcs(template.FuncMap{
-	"now": time.Now,
-}).Parse(strings.TrimSpace(`
-To: {{.Email}}
-Subject: {{.Host}}
-
-{{if .Error}}
-{{.Host}} is down: {{range .Error}}{{.}}
-{{end}}
-{{else}}
-{{.Host}} has come back up.
-{{end}}
-{{now}}
-`)))
-
-func (h *Host) Notify() error {
-	var b bytes.Buffer
-	err := notifyTemplate.Execute(&b, h)
-	if err != nil {
-		return err
+func (r *Runner) NewHost(h *Host) error {
+	r.Lock()
+	if h, ok := r.Hosts[h.Host]; ok {
+		r.Unlock()
+		return fmt.Errorf("Host already being monitored: %v", h.Host)
 	}
-	log.Printf("%v down. Notifying %v", h.Host, h.Email)
-	return SendMail(*mailServer, *fromEmail, []string{h.Email}, b.Bytes())
+	r.Hosts[h.Host] = h
+	r.Unlock()
+
+	r.save()
+	return nil
 }
 
 func StartRunner(file string, poll time.Duration) *Runner {
-	r := &Runner{errors: make(map[string]*State)}
+	r := new(Runner)
+	if err := r.loadRules(file); err != nil {
+		log.Println("StartRunner:", err)
+	}
 	go func() {
 		for {
-			if err := r.loadRules(file); err != nil {
-				log.Println("StartRunner:", err)
-			} else {
-				errc := make(chan error)
-				for i := range r.Hosts {
-					go func(i int) {
-						errc <- r.Ping(r.Hosts[i])
-					}(i)
-				}
-				for _ = range r.Hosts {
-					if err := <-errc; err != nil {
-						log.Println(err)
-					}
+			errc := make(chan error)
+			for name, _ := range r.Hosts {
+				go func() {
+					h := r.Hosts[name]
+					log.Println("pos", h.pos)
+					errc <- r.Ping(h)
+				}()
+			}
+			for _ = range r.Hosts {
+				if err := <-errc; err != nil {
+					log.Println(err)
 				}
 			}
+			r.save()
 			time.Sleep(poll)
 		}
 	}()
@@ -244,7 +211,7 @@ func (r *Runner) loadRules(file string) error {
 		return fmt.Errorf("loadRules Open: %v", err)
 	}
 	defer f.Close()
-	var Hosts []*Host
+	var Hosts map[string]*Host
 	err = json.NewDecoder(f).Decode(&Hosts)
 	if err != nil {
 		return fmt.Errorf("loadRules json Decode: %v", err)
@@ -252,32 +219,4 @@ func (r *Runner) loadRules(file string) error {
 	r.last = mtime
 	r.Hosts = Hosts
 	return nil
-}
-
-func SendMail(addr string, from string, to []string, msg []byte) error {
-	c, err := smtp.Dial(addr)
-	if err != nil {
-		return err
-	}
-	if err = c.Mail(from); err != nil {
-		return err
-	}
-	for _, addr := range to {
-		if err = c.Rcpt(addr); err != nil {
-			return err
-		}
-	}
-	w, err := c.Data()
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(msg)
-	if err != nil {
-		return err
-	}
-	err = w.Close()
-	if err != nil {
-		return err
-	}
-	return c.Quit()
 }

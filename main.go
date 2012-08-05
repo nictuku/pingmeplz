@@ -31,7 +31,7 @@ another email.
 Usage of webmon:
   -errors=3: number of errors before notifying
   -from="webmon@localhost": notification from address
-  -hosts="": host definition file
+  -Hosts="": host definition file
   -poll=10s: file poll interval
   -smtp="localhost:25": SMTP server
   -timeout=10s: response read timeout
@@ -66,15 +66,22 @@ var (
 	readTimeout  = flag.Duration("timeout", time.Second*10, "response read timeout")
 )
 
+var runner *Runner
+
 func main() {
 	flag.Parse()
-	log.Fatal(StartRunner(*hostFile, *pollInterval))
+	runner = StartRunner(*hostFile, *pollInterval)
+
+	http.HandleFunc("/", welcome)
+	http.HandleFunc("/newhost", newhost)
+
+	log.Panic(http.ListenAndServe(":8080", nil))
 }
 
 type Runner struct {
 	sync.Mutex // Protects errors during concurrent Ping
 	last       time.Time
-	hosts      []*Host
+	Hosts      []*Host
 	errors     map[string]*State
 }
 
@@ -153,6 +160,26 @@ func (r *Runner) Fail(h *Host, getErr error) error {
 	return h.Notify()
 }
 
+func (r *Runner) NewHost(h *Host) error {
+	r.Lock()
+	defer r.Unlock()
+	r.Hosts = append(r.Hosts, h)
+
+	//func OpenFile(name string, flag int, perm FileMode) (file *File, err error)
+
+	f, err := os.OpenFile(*hostFile, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("NewHost Open: %v", err)
+	}
+	defer f.Close()
+
+	err = json.NewEncoder(f).Encode(r.Hosts)
+	if err != nil {
+		return fmt.Errorf("loadRules json Encode: %v", err)
+	}
+	return nil
+}
+
 var notifyTemplate = template.Must(template.New("").Funcs(template.FuncMap{
 	"now": time.Now,
 }).Parse(strings.TrimSpace(`
@@ -174,52 +201,56 @@ func (h *Host) Notify() error {
 	if err != nil {
 		return err
 	}
+	log.Printf("%v down. Notifying %v", h.Host, h.Email)
 	return SendMail(*mailServer, *fromEmail, []string{h.Email}, b.Bytes())
 }
 
-func StartRunner(file string, poll time.Duration) error {
+func StartRunner(file string, poll time.Duration) *Runner {
 	r := &Runner{errors: make(map[string]*State)}
-	for {
-		if err := r.loadRules(file); err != nil {
-			return err
-		}
-		errc := make(chan error)
-		for i := range r.hosts {
-			go func(i int) {
-				errc <- r.Ping(r.hosts[i])
-			}(i)
-		}
-		for _ = range r.hosts {
-			if err := <-errc; err != nil {
-				log.Println(err)
+	go func() {
+		for {
+			if err := r.loadRules(file); err != nil {
+				log.Println("StartRunner:", err)
+			} else {
+				errc := make(chan error)
+				for i := range r.Hosts {
+					go func(i int) {
+						errc <- r.Ping(r.Hosts[i])
+					}(i)
+				}
+				for _ = range r.Hosts {
+					if err := <-errc; err != nil {
+						log.Println(err)
+					}
+				}
 			}
+			time.Sleep(poll)
 		}
-		time.Sleep(poll)
-	}
-	panic("unreachable")
+	}()
+	return r
 }
 
 func (r *Runner) loadRules(file string) error {
 	fi, err := os.Stat(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("loadRules Stat: %v", err)
 	}
 	mtime := fi.ModTime()
-	if mtime.Before(r.last) && r.hosts != nil {
+	if mtime.Before(r.last) && r.Hosts != nil {
 		return nil
 	}
 	f, err := os.Open(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("loadRules Open: %v", err)
 	}
 	defer f.Close()
-	var hosts []*Host
-	err = json.NewDecoder(f).Decode(&hosts)
+	var Hosts []*Host
+	err = json.NewDecoder(f).Decode(&Hosts)
 	if err != nil {
-		return err
+		return fmt.Errorf("loadRules json Decode: %v", err)
 	}
 	r.last = mtime
-	r.hosts = hosts
+	r.Hosts = Hosts
 	return nil
 }
 

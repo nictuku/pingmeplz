@@ -47,7 +47,7 @@ Email: <input name="email" type="text"><br>
 <h2>Web sites currently being monitored</h2>
 <ul>
   {{range .Hosts }}	
-    <li>{{ .Host }}, {{ .Status }} </li>
+    <li><a href="/history?host={{ .Host }}">{{ .Host }}</a>, {{ .Status }} </li>
   {{end }}
 </ul>
 {{ else }}

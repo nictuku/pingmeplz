@@ -39,8 +39,8 @@ var (
 )
 
 const (
-	// How many errors and latency stats to keep for each host.
-	bufSize = 30
+	// How latency data points to keep for each host.
+	bufSize = 100
 )
 
 var runner *Runner
@@ -51,6 +51,7 @@ func main() {
 
 	http.HandleFunc("/", welcome)
 	http.HandleFunc("/newhost", newhost)
+	http.HandleFunc("/history", history)
 
 	log.Panic(http.ListenAndServe(":8080", nil))
 }
@@ -66,10 +67,11 @@ type Host struct {
 	Email string
 
 	// Protects pos, Latency and Error
-	sync.Mutex `json:"-"`
-	pos        int                    `json:"-"` // 0..9 
-	Latency    [bufSize]time.Duration `json:"-"`
-	Error      [bufSize]error         `json:"-"`
+	sync.Mutex     `json:"-"`
+	pos            int                    `json:"-"` // 0..9 
+	Latency        [bufSize]time.Duration `json:"-"`
+	Error          [bufSize]error         `json:"-"`
+	CollectionTime [bufSize]time.Time     `json:"-"`
 }
 
 func (h *Host) Status() string {
@@ -123,6 +125,7 @@ func (r *Runner) OK(h *Host, duration time.Duration) error {
 	h.Lock()
 	h.pos = (h.pos + 1) % bufSize
 	h.Latency[h.pos] = duration
+	h.CollectionTime[h.pos] = time.Now()
 	log.Printf("latency for %d %v", h.pos, duration)
 	h.Error[h.pos] = nil
 	h.Unlock()
@@ -132,6 +135,7 @@ func (r *Runner) OK(h *Host, duration time.Duration) error {
 func (r *Runner) Fail(h *Host, getErr error) error {
 	h.Lock()
 	h.pos = (h.pos + 1) % bufSize
+	h.CollectionTime[h.pos] = time.Now()
 	h.Error[h.pos] = getErr
 	h.Unlock()
 	return nil
@@ -171,8 +175,9 @@ func StartRunner(file string, poll time.Duration) *Runner {
 	if err := r.loadRules(file); err != nil {
 		log.Println("StartRunner:", err)
 	}
+	tick := time.Tick(poll)
 	go func() {
-		for {
+		for _ = range tick {
 			errc := make(chan error)
 			for _, h := range r.Hosts {
 				go func(host *Host) {
@@ -185,7 +190,6 @@ func StartRunner(file string, poll time.Duration) *Runner {
 				}
 			}
 			r.save()
-			time.Sleep(poll)
 		}
 	}()
 	return r

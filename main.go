@@ -52,6 +52,7 @@ func main() {
 	http.HandleFunc("/", welcome)
 	http.HandleFunc("/newhost", newhost)
 	http.HandleFunc("/history", history)
+	http.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("assets"))))
 
 	log.Panic(http.ListenAndServe(":8080", nil))
 }

@@ -2,9 +2,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 )
 
@@ -155,6 +158,7 @@ var welcomeTmpl = template.Must(template.New("").Parse(`
 
 func newhost(w http.ResponseWriter, r *http.Request) {
 	logreq(r)
+	// Check required form arams.
 	for _, v := range []string{"host", "email"} {
 		if fv := r.FormValue(v); fv == "" {
 			http.Error(w, v+" not specified or invalid", http.StatusBadRequest)
@@ -163,10 +167,22 @@ func newhost(w http.ResponseWriter, r *http.Request) {
 	}
 	host := &Host{Host: r.FormValue("host"), Email: r.FormValue("email")}
 
-	u := fmt.Sprintf("http://%s/", host.Host)
+	// Ensure this is a host address and not something more dodgy
+	// such as fatdownloads.com/supershugefile.zip
+	if ips, err := net.LookupIP(host.Host); err != nil || len(ips) == 0 {
+		s := fmt.Sprintf("Host could not be resolved")
+		log.Println(s)
+		http.Error(w, s, http.StatusBadRequest)
+		return
+	}
+	// TODO(nictuku): Don't download big files and blacklist a host that asks me to.
+
+	// Check that they added "pingmeplz.com" to robots.txt, as a way 
+	// to say they authorized this monitoring.
+	u := fmt.Sprintf("http://%s/robots.txt", host.Host)
 	resp, err := getWithTimeout(u, *readTimeout)
 	if resp != nil {
-		resp.Body.Close()
+		defer resp.Body.Close()
 	}
 	if err != nil || resp == nil || resp.StatusCode != 200 {
 		s := fmt.Sprintf("newhost GET error: %v", err)
@@ -174,13 +190,24 @@ func newhost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, s, http.StatusInternalServerError)
 		return
 	}
+
+	bs, err := ioutil.ReadAll(resp.Body)
+	if !bytes.Contains(bs, []byte("pingmeplz.com")) {
+		s := fmt.Sprintf("Please addpingmeplz.com somewhere in the http://%v/robots.txt file (for example, in a comment line)", host.Host)
+		log.Print(s)
+		http.Error(w, s, http.StatusBadRequest)
+		return
+	}
+	log.Println("found the string pingmeplz.com in the robots.txt file for", host.Host)
+
+	// Prerequisites are good, now add it to the config.
 	if err := runner.NewHost(host); err != nil {
 		log.Printf("newhost error: %v", err)
 		http.Error(w, "Could not include new host: "+host.Host, http.StatusInternalServerError)
 		return
 	}
 
-	s := fmt.Sprintf("Added host: %v", host)
+	s := fmt.Sprintf("Added host: %v", host.Host)
 	log.Println(s)
 	fmt.Fprint(w, s)
 }

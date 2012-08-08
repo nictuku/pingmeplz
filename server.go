@@ -193,7 +193,8 @@ func newhost(w http.ResponseWriter, r *http.Request) {
 
 	bs, err := ioutil.ReadAll(resp.Body)
 	if !bytes.Contains(bs, []byte("pingmeplz.com")) {
-		s := fmt.Sprintf("Please addpingmeplz.com somewhere in the http://%v/robots.txt file (for example, in a comment line)", host.Host)
+		s := fmt.Sprintf("Please add pingmeplz.com somewhere in http://%v/robots.txt "+
+			"(for example, in a comment line), as a proof that you own this domain and want it to be monitored", host.Host)
 		log.Print(s)
 		http.Error(w, s, http.StatusBadRequest)
 		return

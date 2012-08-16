@@ -21,12 +21,13 @@ func history(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var historyTmpl = template.Must(template.New("").Parse(`
-<!--
-You are free to copy and use this sample in accordance with the terms of the
-Apache license (http://www.apache.org/licenses/LICENSE-2.0.html)
--->
+// Template based on examples from:
+// https://code.google.com/apis/ajax/playground/?type=visualization#annotated_time_line
+//
+// Copyright 2012 Google Inc.
+// Apache license (http://www.apache.org/licenses/LICENSE-2.0.html)
 
+var historyTmpl = template.Must(template.New("").Parse(`
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -34,24 +35,28 @@ Apache license (http://www.apache.org/licenses/LICENSE-2.0.html)
   <meta http-equiv="content-type" content="text/html; charset=utf-8" />
   <script type="text/javascript" src="http://www.google.com/jsapi"></script>
   <script type="text/javascript">
-    google.load('visualization', '1', {packages: ['annotatedtimeline']});
+    google.load('visualization', '1', {packages: ['corechart']});
     function drawVisualization() {
       var data = new google.visualization.DataTable();
-      data.addColumn('date', 'Date');
-      data.addColumn('number', '{{ .Host }} Latency (seconds)');
-      data.addColumn('string', 'title1');
-      data.addColumn('string', 'text1');
+      data.addColumn('datetime', 'Date');
+      data.addColumn('number', '{{ .Host }}');
       data.addRows([
         {{ range $index, $latency := .Latency }}
-          {{ if $latency }}
-            [new Date({{ index $.CollectionTime $index }}), {{ $latency.Seconds }}, null, null],
-          {{ end }}
+          {{ if $latency }}[new Date({{ index $.CollectionTime $index }}), {{ $latency.Seconds }} ],{{ end }}
         {{ end }}
       ]);
     
-      var annotatedtimeline = new google.visualization.AnnotatedTimeLine(
+      var options = {
+        title: 'HTTP GET / overall latency in seconds.',
+        vAxis: {baseline: 0},
+      };
+
+      var formatter = new google.visualization.NumberFormat({fractionDigits: 3});
+      formatter.format(data, 1);
+
+      var chart = new google.visualization.LineChart(
           document.getElementById('visualization'));
-      annotatedtimeline.draw(data, {'displayAnnotations': true});
+      chart.draw(data, options);
     }
     
     google.setOnLoadCallback(drawVisualization);

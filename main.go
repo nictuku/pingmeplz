@@ -86,7 +86,6 @@ func (h *Host) Status() string {
 	if e != nil {
 		return "Error: " + e.Error()
 	}
-	fmt.Printf("%v %v\n", h.Host, h.Latency)
 	return fmt.Sprintf("%dms", h.Latency[h.pos]/time.Millisecond)
 
 }
@@ -174,7 +173,7 @@ func (r *Runner) NewHost(h *Host) error {
 	r.Hosts[h.Host] = h
 	r.Unlock()
 
-	r.save()
+	go r.save()
 	return nil
 }
 
@@ -191,24 +190,36 @@ func StartRunner(file string, poll time.Duration) *Runner {
 	}
 
 	tick := time.Tick(poll)
-
+	r.collect()
 	go func() {
 		for _ = range tick {
-			errc := make(chan error)
-			for _, h := range r.Hosts {
-				go func(host *Host) {
-					errc <- r.Ping(host)
-				}(h)
-			}
-			for _ = range r.Hosts {
-				if err := <-errc; err != nil {
-					log.Println(err)
-				}
-			}
-			r.save()
+			r.collect()
 		}
 	}()
 	return r
+}
+
+func (r *Runner) collect() {
+	// Make a local copy of the hosts map for safety.
+	hosts := make(map[string]*Host, len(r.Hosts))
+	r.Lock()
+	for name, h := range r.Hosts {
+		hosts[name] = h
+	}
+	r.Unlock()
+
+	errc := make(chan error)
+	for _, h := range hosts {
+		go func(host *Host) {
+			errc <- r.Ping(host)
+		}(h)
+	}
+	for _ = range hosts {
+		if err := <-errc; err != nil {
+			log.Println(err)
+		}
+	}
+	r.save()
 }
 
 func (r *Runner) loadRules(file string) error {

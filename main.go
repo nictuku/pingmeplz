@@ -42,7 +42,7 @@ var (
 const (
 	// How many latency data points to keep for each host. 
 	// This is the primary driver of memory usage.
-	bufSize = 1e6
+	bufSize = 10080 // 7d worth of 1m frequency collections.
 )
 
 var runner *Runner
@@ -70,8 +70,10 @@ type Host struct {
 	Email string
 
 	// Protects pos, Latency and Error
-	sync.Mutex     `json:"-"`
-	pos            int                    `json:"-"` // 0..9 
+	sync.Mutex `json:"-"`
+	pos        int `json:"-"` // 0..9 
+
+	// TODO: Optimize. Wasting too much memory.
 	Latency        [bufSize]time.Duration `json:"-"`
 	Error          [bufSize]error         `json:"-"`
 	CollectionTime [bufSize]time.Time     `json:"-"`
@@ -146,7 +148,6 @@ func (r *Runner) Fail(h *Host, getErr error) error {
 
 func (r *Runner) save() error {
 	// TODO: do a file switch only after the write is done.
-
 	f, err := os.OpenFile(*hostFile, os.O_WRONLY, 0)
 	if err != nil {
 		return fmt.Errorf("save Open: %v", err)

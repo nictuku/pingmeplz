@@ -36,11 +36,13 @@ var (
 	hostFile     = flag.String("hosts", "", "host definition file")
 	pollInterval = flag.Duration("poll", time.Second*10, "file poll interval")
 	readTimeout  = flag.Duration("timeout", time.Second*10, "response read timeout")
+	maxHosts     = flag.Int("maxHosts", 100, "Maximum number of hosts we should monitor")
 )
 
 const (
-	// How latency data points to keep for each host.
-	bufSize = 100
+	// How many latency data points to keep for each host. 
+	// This is the primary driver of memory usage.
+	bufSize = 1e6
 )
 
 var runner *Runner
@@ -147,7 +149,7 @@ func (r *Runner) save() error {
 
 	f, err := os.OpenFile(*hostFile, os.O_WRONLY, 0)
 	if err != nil {
-		return fmt.Errorf("NewHost Open: %v", err)
+		return fmt.Errorf("save Open: %v", err)
 	}
 	defer f.Close()
 	r.Lock()
@@ -164,6 +166,10 @@ func (r *Runner) NewHost(h *Host) error {
 		r.Unlock()
 		return fmt.Errorf("Host already being monitored: %v", h.Host)
 	}
+	if len(r.Hosts)+1 > *maxHosts {
+		r.Unlock()
+		return fmt.Errorf("Maximum number of monitored hosts reached: %d/%d", len(r.Hosts), *maxHosts)
+	}
 	r.Hosts[h.Host] = h
 	r.Unlock()
 
@@ -176,7 +182,15 @@ func StartRunner(file string, poll time.Duration) *Runner {
 	if err := r.loadRules(file); err != nil {
 		log.Println("StartRunner:", err)
 	}
+
+	if len(r.Hosts) > *maxHosts {
+		log.Printf("Warning: the configuration file at '%v' contains more hosts than what is set in -maxHosts.", file)
+		log.Printf("Found %d hosts in the config, -maxHosts flag value is %d", len(r.Hosts), *maxHosts)
+		log.Print("We will use the provided configuration and ignore the flag limit, so we will use more memory.")
+	}
+
 	tick := time.Tick(poll)
+
 	go func() {
 		for _ = range tick {
 			errc := make(chan error)
